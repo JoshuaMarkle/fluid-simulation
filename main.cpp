@@ -11,9 +11,10 @@ const int WIDTH = 800;
 const int HEIGHT = 600;
 static GLFWwindow* window;
 
+float timeScale = 4.0f;
 float gravityAcc = 15.0f;
 
-float initSpacing = 0.1f;
+float initSpacing = 0.05f;
 int initParticleNumber = 400;
 float pointSize = 30.0f;
 
@@ -22,7 +23,11 @@ float interactionRadius = 0.05f; // Radius for neighbor interactions
 float stiffness = 100.0f;        // Pressure constant
 float restDensity = 10.0f;       // Rest density of the fluid
 float viscosity = 1.0f;          // Viscosity constant
-const float drag = 0.0f;         // 0.0 - 1.0 drag through air
+float velocityCap = 10.0f;		 // Cap velocity to stop explosions!
+
+float mousePower = 1.0f;
+float mouseInteractionRadius = 0.2f; // Radius for neighbor interactions
+float borderMoveSpeed = 0.0f;
 
 float borderWidth = 1.95f;
 float borderHeight = 1.95f;
@@ -30,6 +35,8 @@ float borderHeight = 1.95f;
 int setupGui();
 int cleanupGui();
 void drawGui();
+glm::vec2 processMouseInteraction(float deltaTime);
+void renderMouseInteraction(const glm::vec2& mousePosition);
 
 struct Particle {
     glm::vec2 position;
@@ -103,6 +110,10 @@ void computeForces(float deltaTime) {
         // Combine forces
         glm::vec2 gravity = glm::vec2(0.0f, -gravityAcc);
         p.velocity += (pressureForce + viscosityForce + gravity) * deltaTime;
+
+        // Cap velocity magnitude (to stop random particle explosions)
+		if (glm::length(p.velocity) > velocityCap)
+			p.velocity = glm::normalize(p.velocity) * velocityCap;
     }
 }
 
@@ -192,18 +203,17 @@ void drawBorder() {
 }
 
 void processInput() {
-	float moveSpeed = 0.05f;
     if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) {
-        borderHeight += moveSpeed; // Increase height
+        borderHeight += borderMoveSpeed; // Increase height
     }
     if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) {
-        borderHeight -= moveSpeed; // Decrease height
+        borderHeight -= borderMoveSpeed; // Decrease height
     }
     if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
-        borderWidth += moveSpeed; // Increase width
+        borderWidth += borderMoveSpeed; // Increase width
     }
     if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
-        borderWidth -= moveSpeed; // Decrease width
+        borderWidth -= borderMoveSpeed; // Decrease width
     }
 
     // Ensure minimum size for the border
@@ -223,7 +233,7 @@ int main() {
     float lastTime = glfwGetTime();
     while (!glfwWindowShouldClose(window)) {
         float currentTime = glfwGetTime();
-        float deltaTime = (currentTime - lastTime) / 4.0f; // Correct deltaTime division
+        float deltaTime = (currentTime - lastTime) / timeScale;
         lastTime = currentTime;
 
 		int display_w, display_h;
@@ -232,13 +242,15 @@ int main() {
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
 
-        processInput(); // Removed redundant parameter `window`
+        processInput();
+		glm::vec2 mousePosition = processMouseInteraction(deltaTime); 
 
         glClear(GL_COLOR_BUFFER_BIT);
 
         drawBorder();
         updateParticles(deltaTime);
         renderParticles();
+		renderMouseInteraction(mousePosition);
         drawGui();
 
         glfwSwapBuffers(window);
@@ -300,22 +312,91 @@ void drawGui() {
     // Make window
     ImGui::Begin("Fluid Sim Parameters");
 	ImGui::Text("Framerate: %.1f FPS", ImGui::GetIO().Framerate);
-    ImGui::SeparatorText("Particle");
+	ImGui::InputInt("Number", &initParticleNumber);
+	ImGui::InputFloat("Spacing", &initSpacing); // Corrected missing semicolon
+	ImGui::SliderFloat("Size", &pointSize, 1.0f, 100.0f);
 	if (ImGui::Button("Start Simulation"))
 		initParticles();
-    ImGui::InputInt("Number", &initParticleNumber);
-    ImGui::InputFloat("Spacing", &initSpacing); // Corrected missing semicolon
-	ImGui::SliderFloat("Size", &pointSize, 1.0f, 100.0f);
-    ImGui::SeparatorText("Parameters");
-    ImGui::InputFloat("Gravity", &gravityAcc);
-    ImGui::InputFloat("Border Dampening", &borderDampen);
-    ImGui::InputFloat("Interaction Radius", &interactionRadius);
-    ImGui::InputFloat("Stiffness", &stiffness);
-    ImGui::InputFloat("Rest Density", &restDensity);
-    ImGui::InputFloat("Viscosity", &viscosity);
+	if (ImGui::CollapsingHeader("Parameters")) {
+		ImGui::SliderFloat("Time Scale", &timeScale, 1.0f, 10.0f);
+		ImGui::InputFloat("Gravity", &gravityAcc);
+		ImGui::InputFloat("Border Dampening", &borderDampen);
+		ImGui::Separator();
+		ImGui::InputFloat("Interact Radius", &interactionRadius);
+		ImGui::InputFloat("Stiffness", &stiffness);
+		ImGui::InputFloat("Rest Density", &restDensity);
+		ImGui::InputFloat("Viscosity", &viscosity);
+		ImGui::Separator();
+		ImGui::InputFloat("Max Velocity", &velocityCap);
+	}
+	if (ImGui::CollapsingHeader("User Interaction")) {
+		ImGui::SliderFloat("Mouse Power", &mousePower, 0.1f, 20.0f);
+		ImGui::SliderFloat("Mouse Radius", &mouseInteractionRadius, 0.1f, 1.0f);
+		ImGui::SliderFloat("Border Move Speed", &borderMoveSpeed, 0.0f, 0.1f);
+	}
     ImGui::End();
 
     // Render GUI
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+}
+
+glm::vec2 processMouseInteraction(float deltaTime) {
+    // Get mouse position
+    double mouseX, mouseY;
+    glfwGetCursorPos(window, &mouseX, &mouseY);
+
+    // Convert screen coordinates to NDC
+    int display_w, display_h;
+    glfwGetFramebufferSize(window, &display_w, &display_h);
+	float ndcX = (mouseX / display_w) * 2.0f - 1.0f;
+	float ndcY = 1.0f - (mouseY / display_h) * 2.0f;
+
+	float simX = ndcX * borderWidth + 1.0f;
+	float simY = ndcY * borderHeight - 1.0f;
+	glm::vec2 mousePosition(simX, simY);
+	// std::cout << "Mouse Position: (" << mousePosition.x << ", " << mousePosition.y << ")\n";
+
+    // Check for mouse buttons
+    bool leftClick = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    bool rightClick = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+
+    if (leftClick || rightClick) {
+        // Apply forces to particles
+        for (auto& p : particles) {
+            glm::vec2 direction = p.position - mousePosition;
+            float distance = glm::length(direction);
+
+            if (distance < mouseInteractionRadius) {
+                float strength = (1.0f - distance / mouseInteractionRadius) * mousePower * 100.0f;
+                glm::vec2 normalizedDirection = glm::normalize(direction);
+                glm::vec2 force = glm::vec2(0.0f);
+
+                if (rightClick) {
+                    force = normalizedDirection * strength; // Push away
+                } else if (leftClick) {
+                    force = -normalizedDirection * strength; // Pull in
+                }
+
+                p.velocity += force * deltaTime;
+            }
+        }
+    }
+
+    return mousePosition; // Return the computed mouse position
+}
+
+void renderMouseInteraction(const glm::vec2& mousePosition) {
+    glColor3f(1.0f, 1.0f, 1.0f); // White color for the interaction circle
+    glLineWidth(2.0f);
+
+    glBegin(GL_LINE_LOOP);
+    const int numSegments = 100; // Circle resolution
+    for (int i = 0; i < numSegments; ++i) {
+        float theta = 2.0f * M_PI * float(i) / float(numSegments); // Angle for this segment
+        float x = cosf(theta) * mouseInteractionRadius;
+        float y = sinf(theta) * mouseInteractionRadius;
+        glVertex2f(mousePosition.x + x, mousePosition.y + y);
+    }
+    glEnd();
 }
