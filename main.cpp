@@ -3,132 +3,141 @@
 #include "imgui_impl_opengl3.h"
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <vector>
 #include <iostream>
 #include <cmath>
+#include <cstdlib>
+#include <ctime>
 
+// Window
 const int WIDTH = 800;
 const int HEIGHT = 600;
 static GLFWwindow* window;
 
-float timeScale = 4.0f;
-float gravityAcc = 15.0f;
+// Simulation Parameters
+float timeScale = 4.0f;				 // Determines simulation speed
+float gravityAcc = 15.0f;			 // How fast particles acc. downward
 
-float initSpacing = 0.05f;
-int initParticleNumber = 400;
-float pointSize = 30.0f;
+int initParticleNumber = 800;		 // The number of particles to spawn
+float pointSize = 15.0f;			 // The size of the rendered particle
 
-float borderDampen = 0.5f;		 // Dampen border collisions
-float interactionRadius = 0.05f; // Radius for neighbor interactions
-float stiffness = 100.0f;        // Pressure constant
-float restDensity = 10.0f;       // Rest density of the fluid
-float viscosity = 1.0f;          // Viscosity constant
-float velocityCap = 10.0f;		 // Cap velocity to stop explosions!
+float borderDampen = 0.5f;			 // Dampen border collisions
+float interactionRadius = 0.2f;	 	 // Radius for neighbor interactions
+float stiffness = 50.0f;        	 // Pressure constant
+float restDensity = 15.0f;      	 // Rest density of the fluid
+float viscosity = 25.0f;         	 // Viscosity constant
+float velocityCap = 10.0f;			 // Cap velocity to stop explosions!
 
-float mousePower = 1.0f;
+float mousePower = 1.0f;			 // Mouse influence over particles
 float mouseInteractionRadius = 0.2f; // Radius for neighbor interactions
-float borderMoveSpeed = 0.0f;
+float borderMoveSpeed = 0.0f;		 // How fast the user can move bonudaries
+float borderWidth = 1.95f;			 // Starting border width
+float borderHeight = 1.95f;			 // Starting border height
 
-float borderWidth = 1.95f;
-float borderHeight = 1.95f;
-
+// Functions
 int setupGui();
 int cleanupGui();
 void drawGui();
-glm::vec2 processMouseInteraction(float deltaTime);
-void renderMouseInteraction(const glm::vec2& mousePosition);
+void setup3D();
+void moveCamera(float deltaTime);
+float randomFloat(float range);
 
+// Camera
+float cameraDistance = 5.0f; // Distance from the center
+float cameraSpeed = 0.5f;    // Speed of camera movement
+float cameraHeight = 1.0f;   // Height of the camera
+
+struct Camera {
+	glm::vec3 position;
+	glm::vec3 rotation;
+};
+
+Camera camera = {
+	glm::vec3(0.0f, 2.0f, cameraDistance), // Initial position
+	glm::vec3(0.0f, 0.0f, 0.0f)            // Rotation
+};
+
+// Particles
 struct Particle {
-    glm::vec2 position;
-    glm::vec2 velocity;
+    glm::vec3 position;
+    glm::vec3 velocity;
     float density = 0.0f;
     float pressure = 0.0f;
 };
 
 std::vector<Particle> particles;
 
+// Spawn in the particles
 void initParticles() {
-    int gridSize = static_cast<int>(sqrt(initParticleNumber));
-    float totalWidth = initSpacing * (gridSize - 1);
-    float startX = -totalWidth / 2.0f; // Center horizontally
-    float startY = -totalWidth / 2.0f; // Center vertically
+    particles.clear();
 
-	particles.clear();
-    glm::vec2 velocity = glm::vec2(0.0f, 0.0f);
+    int gridSize = static_cast<int>(cbrt(initParticleNumber));
+    float totalWidth = interactionRadius * (gridSize - 1);
+    float startX = -totalWidth / 2.0f;
+    float startY = -totalWidth / 2.0f;
+    float startZ = -totalWidth / 2.0f;
+
+    glm::vec3 velocity(0.0f);
     for (int i = 0; i < gridSize; ++i) {
         for (int j = 0; j < gridSize; ++j) {
-            glm::vec2 position = glm::vec2(startX + i * initSpacing, startY + j * initSpacing);
-            if (j % 2 == 1)
-                position.x += initSpacing / 2.0f;
-            particles.push_back({position, velocity});
+            for (int k = 0; k < gridSize; ++k) {
+                glm::vec3 position = glm::vec3(
+                    startX + i * interactionRadius + randomFloat(0.01f),
+                    startY + j * interactionRadius + randomFloat(0.01f),
+                    startZ + k * interactionRadius + randomFloat(0.01f)
+                );
+                particles.push_back({position, velocity});
+            }
         }
     }
 }
 
+// Adjust particle characteristics
 void computeDensityAndPressure() {
     for (auto& p : particles) {
         p.density = 0.0f;
 
         for (const auto& neighbor : particles) {
-            glm::vec2 diff = p.position - neighbor.position;
+            glm::vec3 diff = p.position - neighbor.position;
             float distance = glm::length(diff);
-
             if (distance < interactionRadius) {
-                // Kernel function: Poly6 kernel
                 float q = distance / interactionRadius;
-                p.density += (1.0f - q) * (1.0f - q) * (1.0f - q); // Simplified
+                p.density += (1.0f - q) * (1.0f - q) * (1.0f - q); // Poly6 kernel
             }
         }
 
-        // Pressure: P = stiffness * (density - rest density)
         p.pressure = stiffness * (p.density - restDensity);
     }
 }
 
+// Find the forces acting on a particle
 void computeForces(float deltaTime) {
     for (auto& p : particles) {
-        glm::vec2 pressureForce(0.0f);
-        glm::vec2 viscosityForce(0.0f);
+        glm::vec3 pressureForce(0.0f);
+        glm::vec3 viscosityForce(0.0f);
 
         for (const auto& neighbor : particles) {
-            glm::vec2 diff = p.position - neighbor.position;
+            glm::vec3 diff = p.position - neighbor.position;
             float distance = glm::length(diff);
 
             if (distance < interactionRadius && distance > 0.0f) {
-                glm::vec2 direction = glm::normalize(diff);
+                glm::vec3 direction = glm::normalize(diff);
 
-                // Pressure force: F = -grad(P) * kernel
                 float q = distance / interactionRadius;
                 float pressureKernel = (1.0f - q);
                 pressureForce -= direction * (p.pressure + neighbor.pressure) / (2.0f * neighbor.density) * pressureKernel;
-
-                // Viscosity force: F = mu * laplacian(v) * kernel
                 viscosityForce += viscosity * (neighbor.velocity - p.velocity) * pressureKernel;
             }
         }
 
-        // Combine forces
-        glm::vec2 gravity = glm::vec2(0.0f, -gravityAcc);
+        glm::vec3 gravity(0.0f, -gravityAcc, 0.0f);
         p.velocity += (pressureForce + viscosityForce + gravity) * deltaTime;
 
-        // Cap velocity magnitude (to stop random particle explosions)
-		if (glm::length(p.velocity) > velocityCap)
-			p.velocity = glm::normalize(p.velocity) * velocityCap;
-    }
-}
-
-void correctPositions() {
-    for (auto& p : particles) {
-        glm::vec2 correction(0.0f);
-        for (const auto& neighbor : particles) {
-            glm::vec2 diff = p.position - neighbor.position;
-            float distance = glm::length(diff);
-
-            if (distance < interactionRadius && distance > 0.0f) {
-                correction += (1.0f - distance / interactionRadius) * 0.01f * diff;
-            }
+        if (glm::length(p.velocity) > velocityCap) {
+            p.velocity = glm::normalize(p.velocity) * velocityCap;
         }
-        p.position += correction;
     }
 }
 
@@ -136,69 +145,125 @@ void updateParticles(float deltaTime) {
     computeDensityAndPressure();
     computeForces(deltaTime);
 
-    // Boundary conditions
     float left = -borderWidth / 2.0f;
     float right = borderWidth / 2.0f;
     float top = borderHeight / 2.0f;
     float bottom = -borderHeight / 2.0f;
+    float front = -borderWidth / 2.0f;
+    float back = borderWidth / 2.0f;
 
     for (auto& p : particles) {
-        // Update position
         p.position += p.velocity * deltaTime;
 
-        // Boundary conditions
+        // Boundary conditions (x-axis)
         if (p.position.x < left) {
-            p.position.x = left; // Clamp to the left boundary
-            p.velocity.x *= -borderDampen; // Reverse and dampen velocity
+            p.position.x = left;
+            p.velocity.x *= -borderDampen;
         }
         if (p.position.x > right) {
-            p.position.x = right; // Clamp to the right boundary
-            p.velocity.x *= -borderDampen; // Reverse and dampen velocity
+            p.position.x = right;
+            p.velocity.x *= -borderDampen;
         }
+
+        // Boundary conditions (y-axis)
         if (p.position.y < bottom) {
-            p.position.y = bottom; // Clamp to the bottom boundary
-            p.velocity.y *= -borderDampen; // Reverse and dampen velocity
+            p.position.y = bottom;
+            p.velocity.y *= -borderDampen;
         }
         if (p.position.y > top) {
-            p.position.y = top; // Clamp to the top boundary
-            p.velocity.y *= -borderDampen; // Reverse and dampen velocity
+            p.position.y = top;
+            p.velocity.y *= -borderDampen;
+        }
+
+        // Boundary conditions (z-axis)
+        if (p.position.z < front) {
+            p.position.z = front;
+            p.velocity.z *= -borderDampen;
+        }
+        if (p.position.z > back) {
+            p.position.z = back;
+            p.velocity.z *= -borderDampen;
         }
     }
-
-    correctPositions(); // Re-enabled position correction
 }
 
+// Draw the particles to the screen as points
 void renderParticles() {
-    glEnable(GL_POINT_SMOOTH); // Enable smooth points
-    glHint(GL_POINT_SMOOTH_HINT, GL_NICEST); // Use the nicest smoothing algorithm
-    glPointSize(pointSize); // Set the size of the points (adjust for visibility)
-
+	glEnable(GL_POINT_SMOOTH); // Enable smooth points
+	glHint(GL_POINT_SMOOTH_HINT, GL_NICEST); // Use the nicest smoothing algorithm
+    glPointSize(pointSize);
     glBegin(GL_POINTS);
     for (const auto& p : particles) {
-        // Set color based on density (red for high density, blue for low)
         float normalizedDensity = glm::clamp((p.density - restDensity) / restDensity, 0.0f, 1.0f);
-        float r = normalizedDensity;      // Red increases with density
-        float g = 0.0f;                   // No green in the gradient
-        float b = 1.0f - normalizedDensity; // Blue decreases with density
+        float r = normalizedDensity;
+        float g = 0.0f;
+        float b = 1.0f - normalizedDensity;
 
-        glColor3f(r, g, b); // Apply the color
-        glVertex2f(p.position.x, p.position.y); // Draw the particle
+        glColor3f(r, g, b);
+        glVertex3f(p.position.x, p.position.y, p.position.z);
     }
     glEnd();
 }
 
+float randomFloat(float range) {
+    return static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX) * 2.0f * range - range;
+}
+
 void drawBorder() {
+    // Define the borders of the cube
     float left = -borderWidth / 2.0f;
     float right = borderWidth / 2.0f;
     float top = borderHeight / 2.0f;
     float bottom = -borderHeight / 2.0f;
+    float front = -borderWidth / 2.0f;
+    float back = borderWidth / 2.0f;
 
-    glColor3f(0.5f, 0.5f, 0.5f); // Set border color to white
-    glBegin(GL_LINE_LOOP);
-    glVertex2f(left, top);    // Top-left corner
-    glVertex2f(right, top);   // Top-right corner
-    glVertex2f(right, bottom); // Bottom-right corner
-    glVertex2f(left, bottom); // Bottom-left corner
+    // Set the color for the border
+    glColor3f(0.5f, 0.5f, 0.5f); // Gray color for the border
+    glLineWidth(2.0f);           // Set line width
+
+    // Draw the edges of the cube
+    glBegin(GL_LINES);
+
+    // Bottom face
+    glVertex3f(left, bottom, front);
+    glVertex3f(right, bottom, front);
+
+    glVertex3f(right, bottom, front);
+    glVertex3f(right, bottom, back);
+
+    glVertex3f(right, bottom, back);
+    glVertex3f(left, bottom, back);
+
+    glVertex3f(left, bottom, back);
+    glVertex3f(left, bottom, front);
+
+    // Top face
+    glVertex3f(left, top, front);
+    glVertex3f(right, top, front);
+
+    glVertex3f(right, top, front);
+    glVertex3f(right, top, back);
+
+    glVertex3f(right, top, back);
+    glVertex3f(left, top, back);
+
+    glVertex3f(left, top, back);
+    glVertex3f(left, top, front);
+
+    // Vertical edges
+    glVertex3f(left, bottom, front);
+    glVertex3f(left, top, front);
+
+    glVertex3f(right, bottom, front);
+    glVertex3f(right, top, front);
+
+    glVertex3f(right, bottom, back);
+    glVertex3f(right, top, back);
+
+    glVertex3f(left, bottom, back);
+    glVertex3f(left, top, back);
+
     glEnd();
 }
 
@@ -216,7 +281,7 @@ void processInput() {
         borderWidth -= borderMoveSpeed; // Decrease width
     }
 
-    // Ensure minimum size for the border
+    // Minimum size for the border
     borderWidth = std::max(0.1f, borderWidth);
     borderHeight = std::max(0.1f, borderHeight);
 }
@@ -226,8 +291,10 @@ void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
 }
 
 int main() {
+	std::srand(std::time(nullptr));
 
     setupGui();
+	setup3D();
     initParticles();
 
     float lastTime = glfwGetTime();
@@ -243,14 +310,13 @@ int main() {
 		glClear(GL_COLOR_BUFFER_BIT);
 
         processInput();
-		glm::vec2 mousePosition = processMouseInteraction(deltaTime); 
 
         glClear(GL_COLOR_BUFFER_BIT);
 
+		moveCamera(deltaTime);
         drawBorder();
         updateParticles(deltaTime);
         renderParticles();
-		renderMouseInteraction(mousePosition);
         drawGui();
 
         glfwSwapBuffers(window);
@@ -310,10 +376,10 @@ void drawGui() {
     ImGui::NewFrame();
 
     // Make window
-    ImGui::Begin("Fluid Sim Parameters");
+    ImGui::Begin("Fluid Sim Parameters", NULL, ImGuiWindowFlags_AlwaysAutoResize);
 	ImGui::Text("Framerate: %.1f FPS", ImGui::GetIO().Framerate);
 	ImGui::InputInt("Number", &initParticleNumber);
-	ImGui::InputFloat("Spacing", &initSpacing); // Corrected missing semicolon
+	ImGui::InputFloat("Spacing", &interactionRadius); // Corrected missing semicolon
 	ImGui::SliderFloat("Size", &pointSize, 1.0f, 100.0f);
 	if (ImGui::Button("Start Simulation"))
 		initParticles();
@@ -329,9 +395,12 @@ void drawGui() {
 		ImGui::Separator();
 		ImGui::InputFloat("Max Velocity", &velocityCap);
 	}
+	if (ImGui::CollapsingHeader("Camera")) {
+		ImGui::SliderFloat("Cam Speed", &cameraSpeed, 0.0f, 10.0f);
+		ImGui::SliderFloat("Cam Distance", &cameraDistance, 0.1f, 10.0f);
+		ImGui::SliderFloat("Cam Height", &cameraHeight, 0.0f, 5.0f);
+	}
 	if (ImGui::CollapsingHeader("User Interaction")) {
-		ImGui::SliderFloat("Mouse Power", &mousePower, 0.1f, 20.0f);
-		ImGui::SliderFloat("Mouse Radius", &mouseInteractionRadius, 0.1f, 1.0f);
 		ImGui::SliderFloat("Border Move Speed", &borderMoveSpeed, 0.0f, 0.1f);
 	}
     ImGui::End();
@@ -341,62 +410,42 @@ void drawGui() {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
-glm::vec2 processMouseInteraction(float deltaTime) {
-    // Get mouse position
-    double mouseX, mouseY;
-    glfwGetCursorPos(window, &mouseX, &mouseY);
+void setup3D() {
+    // Projection matrix
+    glm::mat4 projection = glm::perspective(
+        glm::radians(cameraFov),
+        (float)WIDTH / (float)HEIGHT,
+        0.1f, 100.0f
+    );
 
-    // Convert screen coordinates to NDC
-    int display_w, display_h;
-    glfwGetFramebufferSize(window, &display_w, &display_h);
-	float ndcX = (mouseX / display_w) * 2.0f - 1.0f;
-	float ndcY = 1.0f - (mouseY / display_h) * 2.0f;
+    // View matrix (camera)
+    glm::mat4 view = glm::lookAt(
+        glm::vec3(0.0f, 0.0f, 5.0f), // Camera position
+        glm::vec3(0.0f, 0.0f, 0.0f), // Look-at point
+        glm::vec3(0.0f, 1.0f, 0.0f)  // Up vector
+    );
 
-	float simX = ndcX * borderWidth + 1.0f;
-	float simY = ndcY * borderHeight - 1.0f;
-	glm::vec2 mousePosition(simX, simY);
-	// std::cout << "Mouse Position: (" << mousePosition.x << ", " << mousePosition.y << ")\n";
-
-    // Check for mouse buttons
-    bool leftClick = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-    bool rightClick = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-
-    if (leftClick || rightClick) {
-        // Apply forces to particles
-        for (auto& p : particles) {
-            glm::vec2 direction = p.position - mousePosition;
-            float distance = glm::length(direction);
-
-            if (distance < mouseInteractionRadius) {
-                float strength = (1.0f - distance / mouseInteractionRadius) * mousePower * 100.0f;
-                glm::vec2 normalizedDirection = glm::normalize(direction);
-                glm::vec2 force = glm::vec2(0.0f);
-
-                if (rightClick) {
-                    force = normalizedDirection * strength; // Push away
-                } else if (leftClick) {
-                    force = -normalizedDirection * strength; // Pull in
-                }
-
-                p.velocity += force * deltaTime;
-            }
-        }
-    }
-
-    return mousePosition; // Return the computed mouse position
+    // Set the matrices in OpenGL
+    glMatrixMode(GL_PROJECTION);
+    glLoadMatrixf(glm::value_ptr(projection));
+    glMatrixMode(GL_MODELVIEW);
+    glLoadMatrixf(glm::value_ptr(view));
 }
 
-void renderMouseInteraction(const glm::vec2& mousePosition) {
-    glColor3f(1.0f, 1.0f, 1.0f); // White color for the interaction circle
-    glLineWidth(2.0f);
+void moveCamera(float deltaTime) {
+    static float angle = 0.0f;
+    angle += cameraSpeed * deltaTime;
 
-    glBegin(GL_LINE_LOOP);
-    const int numSegments = 100; // Circle resolution
-    for (int i = 0; i < numSegments; ++i) {
-        float theta = 2.0f * M_PI * float(i) / float(numSegments); // Angle for this segment
-        float x = cosf(theta) * mouseInteractionRadius;
-        float y = sinf(theta) * mouseInteractionRadius;
-        glVertex2f(mousePosition.x + x, mousePosition.y + y);
-    }
-    glEnd();
+    // Calculate the new position
+    camera.position.x = cameraDistance * cos(angle);
+    camera.position.z = cameraDistance * sin(angle);
+    camera.position.y = cameraHeight;
+
+    glm::vec3 target(0.0f, 0.0f, 0.0f);
+    glm::vec3 up(0.0f, 1.0f, 0.0f);
+
+    // Load the view matrix into OpenGL
+    glm::mat4 view = glm::lookAt(camera.position, target, up);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadMatrixf(glm::value_ptr(view));
 }
