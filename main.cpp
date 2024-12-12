@@ -413,7 +413,7 @@ void drawGui() {
 void setup3D() {
     // Projection matrix
     glm::mat4 projection = glm::perspective(
-        glm::radians(cameraFov),
+        glm::radians(45.0f),
         (float)WIDTH / (float)HEIGHT,
         0.1f, 100.0f
     );
@@ -441,11 +441,13 @@ void moveCamera(float deltaTime) {
     camera.position.z = cameraDistance * sin(angle);
     camera.position.y = cameraHeight;
 
+    // The camera always points to the center of the simulation (0, 0, 0)
     glm::vec3 target(0.0f, 0.0f, 0.0f);
     glm::vec3 up(0.0f, 1.0f, 0.0f);
 
-    // Load the view matrix into OpenGL
+    // Create the view matrix
     glm::mat4 view = glm::lookAt(camera.position, target, up);
     glMatrixMode(GL_MODELVIEW);
     glLoadMatrixf(glm::value_ptr(view));
 }
+
